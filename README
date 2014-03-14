@@ -1,0 +1,37 @@
+# $Id: README,v 1.1.1.1 2003/11/12 20:51:59 jepace Exp $
+
+======
+ubhpal
+======
+
+ubhpal is a suite of tools for eliminating duplicate copies of files
+downloaded using ubh.  
+
+It creates a database of MD5 hashes of the files; if a file with the
+same checksum is encountered, the user is prompted to pick which of
+the two to keep, and the other is deleted.  Other tools in the suite
+allow renaming and deleting of files.
+
+The relevant programs are:
+
+    ubhpal      Look for collisions in directory tree
+    ubhmv       Move a file in the database to a new location
+    ubhrm       Mark a file as unwanted, and delete it
+    ubhdump     Print contents of ubhpal database
+    ubhlib.pm   Library of helper functions
+
+-----
+To Do
+-----
+Locking on the database when running.
+Trap signals (such as kill) and close gracefully.
+Implement 'ubhmv' to rename a file, or change it's directory.
+perldoc ubhlib.pm
+Do the require's better!
+Other info (size) in the database? (many false collisions with md5?)
+Incorporate directly into ubh
+Better user input mechanism.
+QA suite
+Performance measurement
+Other db format?
+mysql interface?

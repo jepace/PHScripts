@@ -1,0 +1,426 @@
+#!/usr/bin/perl
+use strict;
+
+# $Id: ubhpal,v 1.8 2004/08/11 17:06:29 jepace Exp $
+
+# This script finds duplicate files using MD5 checksums.
+
+my $lib = $ENV{"HOME"} . "/usr/bin/ubhlib.pm";
+require $lib;
+
+use File::Copy;
+use File::Find;
+use DB_File;                # Load database module
+use Getopt::Std;
+
+#
+# Tunables
+#
+my $MD5="/sbin/md5";
+my $rcfile = "$ENV{HOME}/.ubhrc";
+my $groupsfile = "$ENV{HOME}/.ubhgroups";
+my $dbfile = "$ENV{HOME}/.paldb";
+
+my %arg;                    # Command line args
+my $verbose=0;              # Copious output
+my $auto=0;                 # Don't ask for preference -- choose one
+my $quiet=0;                # Don't ask for preference -- leave collision
+my $silent=0;               # Don't print out file info on collision
+my $auto_purge=0;           # Kill both copies of collisions and purge
+my ($cmd, $ret);
+
+my $start_dir;              # Root directory; from ubh config
+
+my %db;                     # Database of (sum => filename)
+my %reverse_db;             # Database of filenames
+my @groups;                 # List of groups, in order of preference
+
+my $open_elem=0;            # Number of DB records read at startup
+my $processed_files = 0;    # Number of files completed
+my $num_collision = 0;      # Number of file collisions
+my $deleted = 0;            # Number of files deleted this run
+my $added = 0;              # Number of new files added to db
+my $purged = 0;             # Number of files purged
+
+my $start;                  # Start time
+my $elapsed;                # Seconds elapsed
+
+###################################################################
+# process_file (string filename)
+#
+# This routine checks to see if the specified file exists in the
+# database.  If so, prompt to delete one. If not, add it.
+#
+###################################################################
+sub process_file
+{
+    my $file = $_;  # File to be processed
+    my $fullname;   # Path to $file relative to $start_dir
+    my $sum;        # MD5 sum of current file
+    my $delme;      # File to be deleted due to collision
+
+    my $char;       # User's selection
+
+    die "ERROR: process_file: filename required\n" unless ($file);
+    return unless ( -e $file ); # XXX: is this the right test?
+        
+    # NB: $File::Find::dir contains the current directory name, and $_
+    # the current filename within that directory.  $File::Find::name
+    # contains "$File::Find::dir/$_".  You are chdir()'d to
+    # $File::Find::dir when the function is called.
+
+    $fullname = $File::Find::name;
+    $fullname =~ /^\.\/([^\/]+)\//;
+    my $new_dir = $1;
+
+    print "File: '$fullname' ($new_dir)\n" if ($verbose);
+
+    # Sanitize filename
+    # XXX: Could be better .. '$' is not uncommon. This might not be
+    # all inclusive of trouble cases.
+    if ($file =~ /[\s\$\&]/)
+    {
+        print "File: '$fullname' contains illegal characters.  Skipping!\n";
+        return;
+    }
+
+    # XXX: It would be nice if we didn't have to md5 files we already
+    # know about.  This would require a reverse hash table.
+    if ( $reverse_db{$fullname} )
+    {
+        print "Known file $fullname\n" if $verbose;
+        return;
+    }
+
+    # Generate the key for this file
+    $cmd="$MD5 -q \"$file\"";
+    $sum=`$cmd 2>&1`;
+    chomp $sum;
+    die "$cmd: $sum\n" if $?;
+    print "$cmd\n" if $verbose;
+
+    die "ERROR: '$fullname': No sum?!\n" unless ($sum);
+
+    # Determine what to do with this file.
+    if (! exists $db{$sum})
+    {
+        # Easy case .. never seen it before. Add to database.
+        $db{$sum} = $fullname;
+        $added++;
+        print "New file: '$fullname'\n" if ($verbose);
+    }
+    elsif ($fullname ne $db{$sum})
+    {
+        # Extract short name of db entry
+        my $old_dir = "";
+        my $old_file = "";
+        if ( $db{$sum} ne "DELETED" )
+        {
+            $db{$sum} =~ /^\.\/([^\/]+)\/([^\/]+)$/;
+            $old_dir = $1;
+            $old_file = $2;
+            warn "Cannot extract directory from $db{$sum}!\n" unless $old_dir;
+            warn "Cannot extract filename from $db{$sum}!\n" unless $old_file;
+        }
+
+        # This is not the same file that made it into the database,
+        # since it has a different name. Deal with it.
+        print "\nCollision!\n" unless $silent;
+        $num_collision++;
+
+        #
+        # Try to delete automatically.
+        #
+
+        # Check to see if this is a nuked entry
+        if ($db{$sum} eq "DELETED" )
+        {
+            print "File marked for purge\n" unless $silent;
+            $purged++;
+            $delme = $fullname;
+        }
+        elsif ($auto_purge)
+        {
+            # Delete one here and delete the other in the normal
+            # place below
+            unlink ("$start_dir/$fullname") or 
+                warn "ERROR: unlink '$start_dir/$fullname': $!\n";
+            print "Deleted: '$fullname'\n" unless $silent;
+            $deleted++;
+
+            $delme = $db{$sum};
+
+            # Purge it...
+            $db{$sum} = "DELETED";
+            $purged++;
+        }
+        # Same filename, different directory.  
+        # XXX: Pick the preferred directory.
+        elsif ( $file eq $old_file )
+        {
+            for ( my $i=0; $i < $#groups; $i++)
+            {
+                if ($old_dir eq $groups[$i])
+                {
+                    print "Prefer '$db{$sum}'\n" unless $silent;
+                    $delme = $fullname;
+                    last;
+                }
+                elsif ($new_dir eq $groups[$i] )
+                {
+                    print "Prefer '$fullname'\n" unless $silent;
+                    $delme = $db{$sum};
+                    $db{$sum} = $fullname;
+                    $added++;
+                    last;
+                }
+            }
+            warn "None preferred? ($new_dir; $old_dir)\n" unless $delme;
+        }
+        # I don't like non-word chars in my files
+        elsif ( $file =~ /\W/ && $db{$sum} !~ /\W/)
+        {
+            print "Prefer '$db{$sum}'\n" unless $silent;
+            $delme = $fullname;
+        }
+        elsif ( $file !~ /\W/ && $db{$sum} =~ /\W/)
+        {
+            print "Prefer '$fullname'\n" unless $silent;
+            $delme = $db{$sum};
+            $db{$sum} = $fullname;
+            $added++;
+        }
+        # Prefer foo.jpg over 75343_foo.jpg
+        elsif ( $file =~ /^\d/ && $db{$sum} =~ /^\D/)
+        {
+            print "Prefer '$db{$sum}'\n" unless $silent;
+            $delme = $fullname;
+        }
+        elsif ( $file =~ /^\D/ && $db{$sum} =~ /^\d/)
+        {
+            print "Prefer '$fullname'\n" unless $silent;
+            $delme = $db{$sum};
+            $db{$sum} = $fullname;
+            $added++;
+        }
+        elsif ( $quiet )
+        {
+            print "$fullname\n$db{$sum}\n" unless $silent;
+        }
+        # Auto nuke: the one in the database if they are in the same
+        # directory, otherwise choose the better directory.
+        elsif ($auto)
+        {
+            if ($old_dir eq $new_dir)
+            {
+                print "Prefer '$db{$sum}'\n" unless $silent;
+                $delme = $fullname;
+            }
+            else
+            {
+                for ( my $i=0; $i < $#groups; $i++)
+                {
+                    if ($old_dir eq $groups[$i])
+                    {
+                        print "Prefer '$db{$sum}'\n" unless $silent;
+                        $delme = $fullname;
+                        last;
+                    }
+                    elsif ($new_dir eq $groups[$i] )
+                    {
+                        print "Prefer '$fullname'\n" unless $silent;
+                        $delme = $db{$sum};
+                        $db{$sum} = $fullname;
+                        $added++;
+                        last;
+                    }
+                }
+            }
+
+            # If no clear directory preference, stick with the one
+            # already in the database
+            unless ($delme)
+            {
+                print "None preferred?\n" unless $delme;
+                print "Prefer '$db{$sum}'\n" unless $silent;
+                $delme = $fullname;
+            }
+        }
+
+        # No easy solution. Ask the user.
+        # XXX: Interface sucks!
+        else
+        {
+            print "(1) Delete '$fullname'\n";
+            print "(2) Delete '$db{$sum}'\n";
+            print "(3) Purge and delete both\n";
+            print "(4) Leave collision: ";
+
+            while ( ($char = getc) == '\n') { ; }
+
+            if ($char == 1) { $delme = $fullname; }
+            elsif ($char == 2)
+            {
+                $delme = $db{$sum};
+                $db{$sum} = $fullname;
+                $added++;
+            }
+            elsif ($char == 3)
+            {
+                # Delete one here and delete the other in the normal
+                # place below
+                unlink ("$start_dir/$fullname") or 
+                    warn "ERROR: unlink '$start_dir/$fullname': $!\n";
+                print "Deleted: '$fullname'\n" unless $silent;
+                $deleted++;
+
+                $delme = $db{$sum};
+
+                # Purge it...
+                $db{$sum} = "DELETED";
+                $added++;
+            }
+            elsif ($char == 4)
+            {
+                print "Leaving collision! (Beware!)\n";
+                undef $delme;
+            } 
+            else
+            {
+                print "Error:  Got input '$char'\n";
+                exit;
+            }
+        }
+    }   # end collision handling
+    else
+    {
+        print "Old File: '$fullname'\n" if ($verbose);
+    }
+
+    if (++$processed_files % 1000 == 0)
+    {
+        print "Processed $processed_files files...\n";
+    }
+
+    # If we marked a file to die, kill it.
+    if ($delme)
+    {
+        unlink ("$start_dir/$delme") or 
+            warn "ERROR: unlink '$delme': $!\n";
+        print "Deleted: '$delme'\n" unless $silent;
+        $deleted++;
+    }
+
+    return 0;
+}   # end sub process_file
+
+sub exit_pal
+{
+    $SIG{INT} = $SIG{QUIT} = 'DEFAULT';
+
+    # Count the database, just for fun.
+    my $close_elem=0;
+    $close_elem++ foreach (keys %db);
+    untie %db;
+
+    $elapsed = time() - $start;
+    print "[" . localtime() . "] Finished ($elapsed secs)\n";
+
+    my $delta = $close_elem - $open_elem;
+    print "\nProcessed $processed_files files ";
+    print "[$num_collision collisions; $added new]\n";
+    print "Deleted $deleted files (incl $purged purged)\n";
+    print "Open: $open_elem recs; Close: $close_elem recs [+$delta recs]\n";
+    print "\n";
+
+    exit 0;
+}
+
+##################
+# main
+##################
+
+# Parse input
+getopts("ad:hpqsv", \%arg);
+$auto++ if $arg{a};
+$verbose++ if $arg{v};
+$quiet++ if $arg{q};
+$silent++ if $arg{s};
+$auto_purge++ if $arg{p};
+
+# Parse rc file
+my %rc = &parse_rc ($rcfile);
+@groups = &parse_grouplist ($groupsfile);
+
+# Determine the base directory
+$start_dir = $rc{"DATADIR"} if %rc;
+$start_dir = $arg{d} if ($arg{d});
+
+if ($arg{h})
+{
+    print "\n";
+    print "ubhpal helps manage large collections of files in a\n";
+    print "directory tree that may have duplicate files.\n";
+    print "\n";
+    print "It processes files below '$start_dir'.\n" if $start_dir;
+    print "It reads '$rcfile' and '$groupsfile'.\n";
+    print "It writes '$dbfile'.\n";
+    print "\n";
+    print "Usage: ubhpal [-a|-q] [-h] [-s] [-v] [-d start_dir]\n";
+    print "\t-a: Auto mode -- Handle all collisions internally\n";
+    print "\t-q: Quiet mode -- Ignore all non-obvious collisions \n";
+    print "\t-h: Help (You're looking at it)\n";
+    print "\t-s: Silent -- Don't display collision info\n";
+    print "\t-v: Verbose -- Lots of debugging output\n";
+    print "\t-d start_dir: Use start_dir as root of file tree\n";
+    print "\n";
+
+    exit 0;
+}
+
+die "Must set DATADIR in $rcfile, or use '-d start_dir' flag\n" 
+    unless $start_dir;
+
+print "[" . localtime() . "] Started\n";
+$start = time();
+
+if ($verbose)
+{
+    print "Start directory: $start_dir\n";
+    print "RC file: $rcfile\n";
+    print "Groups file: $groupsfile\n";
+    print "Database: $dbfile\n";
+    print "Auto mode: $auto\n";
+    print "Quiet mode: $quiet\n";
+    print "Silent mode: $silent\n";
+    print "Verbose mode: $verbose\n";
+}
+
+# Setup signal handler
+$SIG{INT} = $SIG{QUIT} = \&exit_pal;
+
+#
+# Load the existing database
+#
+tie %db, "DB_File", $dbfile, O_CREAT|O_RDWR, 0600, $DB_HASH
+    or die "open_database: database '$dbfile': $!\n";
+foreach my $f (keys %db)
+{
+    $open_elem++;
+    # Create reverse mapping
+    my $fname = $db{$f};
+    $reverse_db{$fname} = 1;
+}
+$elapsed = time() - $start;
+print "[" . localtime() . "] Loaded $open_elem records ($elapsed secs)\n";
+
+#
+# Do the work
+#
+chdir "$start_dir" or die "chdir $start_dir: $!\n";
+find (\&process_file, ".");
+
+#
+# We're done. Cleanup.
+#
+&exit_pal;

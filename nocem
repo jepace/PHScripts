@@ -1,0 +1,40 @@
+#!/usr/bin/perl -s
+# -*-perl-*-
+
+# This is the chain that calls the three modules in sync.
+#  Thus, this is what you would modify in order to swap in your own
+#  modules.
+
+$home=$ENV{"HOME"};
+$ncmdir="/home/pace/.ncm"; 	# $home/.ncm
+$head="$ncmdir/ncm.head";
+require "$head";			# Configuration information
+
+$override && ($orstr="-override");
+$reset && exec ("$ncmdir/reset-state $orstr");
+
+$args1="";
+$args2="";
+$args3="";
+$allargs="";
+
+$verbstr=($verb || $defverb)?"-verb":"";
+$quiet && ($verbstr="");
+
+$quickstr=(($quick) || ($defquick))?"-quick ":"";
+$slow && ($quickstr="");
+
+$allargs.=$verbstr." ";
+
+$stage1="$ncmdir/ncm.s1";
+$stage2="$ncmdir/ncm.s2";
+$stage3="$ncmdir/ncm.s3 ".$quickstr;
+
+$exstr="$stage1 $allargs $args1 |
+	$stage2 $allargs $args2 |
+	$stage3 $allargs $args3  ";
+
+$|=1;
+print `$exstr`;
+
+

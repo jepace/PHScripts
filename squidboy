@@ -1,0 +1,33 @@
+#!/bin/sh
+
+SQUIDDIR="/usr/local/etc/squid"
+SQUIDCONF="squid.conf"
+ARG=$1
+
+if [ -z $ARG ]
+then
+    echo "Usage: squidboy [on|off] - Turn on web access for boy"
+    exit
+fi
+
+if [ ! -w $SQUIDDIR/$SQUIDCONF ]
+then
+    echo "squidboy: Permission problem.  Are you root?"
+    exit
+fi
+
+if [ $ARG == "on" ]
+then
+    echo "** Enabling Squid for EJP"
+    /bin/cp $SQUIDDIR/$SQUIDCONF-EJP $SQUIDDIR/$SQUIDCONF
+    /usr/sbin/service squid restart
+elif [ $ARG == "off" ]
+then
+    echo "** Disabling Squid for EJP"
+    /bin/cp $SQUIDDIR/$SQUIDCONF-NOEJP $SQUIDDIR/$SQUIDCONF
+    /usr/sbin/service squid restart
+else
+    echo "Usage: squidboy [on|off] - Turn on web access for boy"
+fi
+
+exit

@@ -1,0 +1,19 @@
+#!/usr/bin/perl -w
+use strict;
+
+# $Id: ubhdump,v 1.2 2003/12/07 23:23:54 jepace Exp $
+
+# ubhdump
+#
+# This program dumps the contents of the ubhpal database.
+use Data::Dumper;
+
+my $lib = $ENV{HOME} . "/usr/bin/ubhlib.pm";
+require "$lib";
+
+my $dbfile = $ENV{HOME} . "/.paldb";
+
+print "Dumping database '$dbfile'\n";
+my %db = &open_database ($dbfile);
+&dump_database (%db);
+&close_database (%db);

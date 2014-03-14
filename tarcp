@@ -1,0 +1,40 @@
+#!/bin/sh
+#
+# $Id: tarcp,v 1.2 2013/07/14 22:46:54 jepace Exp $
+#
+# tarcp - copy directory trees, using tar
+#
+# TODO:
+#   - Use pv correctly
+#   - Test it out by using it.
+
+if [ $# -ne 2 ]
+then
+    echo "Usage: $0 src-dir dest-dir"
+    exit
+fi
+
+# Check source dir exists and is a directory
+if [ ! -d $1 ]
+then
+    echo "Error: '$1' not a directory"
+    exit
+fi
+
+# Create dest if not exist
+if [ ! -d $2 ] && [ -e $2 ]
+then
+    echo "Error: '$2' exists and is not a directory"
+    exit
+fi
+
+if [ ! -d $2 ]
+then
+    mkdir -p $2
+    # NB: Check return value
+    echo "DEBUG: '$2' created"
+fi
+
+## Create a pipeline that copies arg1 to arg2
+# tar -cpf - $1 | pv -s `du -s $1 | awk '{print $1}'` | (cd $2; tar -xpf - )
+tar -cpf - $1 | (cd $2; tar -vxpf - )

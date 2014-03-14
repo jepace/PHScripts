@@ -1,0 +1,92 @@
+#!/usr/bin/perl
+use strict;
+
+# $Id: ubhrm,v 1.3 2004/04/04 05:12:42 jepace Exp $
+
+# ubhrm
+#
+# This program deletes the specified file(s) and updates the ubhpal
+# database to delete them if they are ever downloaded again.
+use DB_File;
+use Getopt::Std;
+
+my $lib = $ENV{HOME} . "/usr/bin/ubhlib.pm";
+require "$lib";
+
+my %db;         # Database
+
+my $cmd;
+my %arg;
+my $verbose=0;
+
+my $rcfile = $ENV{HOME} . "/.ubhrc";
+my $dbfile = $ENV{HOME} . "/.paldb";
+
+my $sum;
+my $MD5 = "/sbin/md5 -q";
+
+die "Usage: ubhrm [-dv] file [...]\n" unless @ARGV;
+
+getopts("dv", \%arg);
+$verbose++ if $arg{v};
+
+# Parse rc file
+my %rc = &parse_rc ($rcfile);
+
+# Determine the base directory
+my $start_dir = $rc{"DATADIR"};
+die "Must set DATADIR in ~/.ubhrc\n" unless $start_dir;
+
+print "[" . localtime() . "] Starting\n";
+
+#
+# Load the existing database
+#
+my $open_elem=0;
+tie %db, "DB_File", $dbfile, O_CREAT|O_RDWR, 0600, $DB_HASH
+    or die "open_database: database '$dbfile': $!\n";
+foreach my $f (keys %db) { $open_elem++; }
+print "[" . localtime() . "] Read in $open_elem records\n";
+
+my $hit = 0;
+my $number = 0;
+
+foreach (@ARGV)
+{
+    print "[" . localtime() . "] Processing '$_'\n" if $verbose;
+
+    $number++;
+    next unless (-e);
+
+    $cmd = "$MD5 \"$_\"";
+    $sum = `$cmd 2>&1`;
+    chomp $sum;
+    die "$cmd: $sum\n" if $?;
+    print "$cmd\n" if $verbose;
+
+    next unless ($sum);
+    next unless (exists $db{$sum});
+    print "Found '$db{$sum}'\n" if $verbose;
+
+    # -d flags asks to delete the file from the database, not mark it
+    # as deleted.  This lets you kill corrupt files without wasting
+    # database space
+    if ( $arg{d} ) { $db{$sum} = ''; }
+    else { $db{$sum} = "DELETED"; }
+
+    unlink or die "$_: Delete failed: $!\n";
+    print "unlink $_\n" if $verbose;
+
+    $hit++;
+
+    print "[" . localtime() . "] Deleted '$_'\n";
+}
+
+print "[" . localtime() . "] Removed $hit files ($number requested)\n";
+
+my $close_elem=0;
+foreach my $f (keys %db) { $close_elem++; }
+print "[" . localtime() . "] Wrote out $close_elem records\n";
+untie %db;
+
+exit ($number - $hit);

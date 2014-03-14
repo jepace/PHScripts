@@ -1,0 +1,163 @@
+#!/usr/bin/perl -w
+use strict;
+
+# $Id: ubhmv,v 1.1.1.1 2003/11/12 20:51:59 jepace Exp $
+
+# ubhmv
+#
+# Usage: ubhmv [-v] [-f | -i] file [file...] destination
+#
+# This program moves the specified file(s) to the destination and
+# updates the ubhpal database to reflect their new location(s).
+
+use File::Copy;
+use File::Basename;
+use Getopt::Std;
+use vars qw/ $opt_f $opt_i $opt_v /;
+
+# Source in ubh library
+my $lib = $ENV{HOME} . "/usr/bin/ubhlib.pm";
+require "$lib";
+
+my $MD5 = "/sbin/md5 -q";
+
+# Files we will operate on
+# XXX: These should be in an rc file
+my $rcfile = $ENV{HOME} . "/.ubhrc";
+my $dbfile = $ENV{HOME} . "/.paldb";
+
+my @srcs;       # Args passed from user
+my $src;        # Source file (as passed from user)
+my $palsrc;     # Path to src relative to $startdir
+my $srcfile;    # Just the name of the source file
+
+my $dest;       # Destination from the user
+my $paldest;    # Path to dest relative to $startdir
+my $paldestfile;
+
+my $sum;        # MD5 sum of current file
+my $char;       # User's interactive input
+
+getopts("fiv");
+
+die "Usage: ubhmv [-v] [-f|-i] file [...] destination\n" unless $ARGV[1];
+
+# Last arg is destination
+$dest = splice (@ARGV, -1);
+@srcs = @ARGV;
+
+die "Usage: ubhmv [-v] [-f|-i] file [...] destination\n" unless @srcs;
+die "Usage: ubhmv [-v] [-f|-i] file [...] destination\n" unless $dest;
+die "Only one of -f and -i can be specified\n" if ($opt_f && $opt_i);
+
+if (defined $srcs[1] && ! -d $dest)
+{
+    print "Destination must be a directory with multiple sources.\n";
+    exit 1;
+}
+
+# Parse rc file to get the DATADIR. 
+my %rc = &parse_rc ($rcfile);
+my $start_dir = $rc{"DATADIR"};
+die "Must set DATADIR in ~/.ubhrc\n" unless $start_dir;
+
+# Learn more about the destination
+unless ($paldest = ubhname ($dest, $start_dir))
+{
+    print "Cannot ubhname '$dest'\n";
+    exit 1;
+}
+
+# Load the existing database
+my %db = &open_database ($dbfile);
+
+my $hit = 0;
+my $number = 0;
+
+foreach $src (@srcs)
+{
+    $number++;
+
+    # Get other names for the files
+    $srcfile = basename ($src, "");
+    unless ($palsrc = ubhname ($src, $start_dir))
+    {
+        print "Cannot ubhname '$src'\n";
+        next;
+    }
+
+    $paldestfile = $paldest;
+    $paldestfile = "$paldest/$srcfile" if ( -d $dest);
+
+    if ($opt_v)
+    {
+        print "Src: '$src'  PalSrc: '$palsrc'\n";
+        print "Dst: '$dest'  PalDstFile: '$paldestfile'\n";
+    }
+
+    unless (-e $src)
+    {
+        print "$src: No such file or directory\n";
+        next;
+    }
+
+    # Get the key for this file and ensure that it exists in the
+    # database
+    $sum = `$MD5 "$src"`;
+    chomp $sum;
+
+    unless ($sum)
+    {
+        print "ERROR: $src:  No sum?!\n";
+        next;
+    }
+
+    unless (exists $db{$sum})
+    {
+        print "$src: Unknown file\n";
+        next;
+    }
+
+    # XXX: Should we check to see if the database has the same path as
+    # what we thing it is?
+    unless ($db{$sum} eq $palsrc)
+    {
+        print "$src: Database sez '$db{$sum}'\n";
+        next;
+    }
+
+    # Get user's confirmation.  Then we are ready to change the
+    # database and move the file
+
+    if ($opt_i)
+    {
+        print "move '$src' to '$dest'? ";
+        $char = getc;
+        getc if ($char eq '\n');
+        next unless ($char eq 'y');
+    }
+    elsif (-e $dest && ! -d $dest )
+    {
+        print "'$dest' exists. Overwrite? ";
+        $char = getc;
+        getc if ($char eq '\n');
+        next unless ($char eq 'y');
+    }
+    
+    # Do the move
+    # FIXME: This doesn't work?
+    $db{$sum} = $paldestfile;
+
+    unless (move($src, $dest))
+    {
+        print "ubhmv '$src' to '$dest' failed: $!\n";
+        next;
+    }
+    $hit++;
+
+    print "ubhmv: File '$src' moved to '$dest'\n" if ($opt_v);
+}
+
+&close_database (%db);
+
+exit ($number - $hit);

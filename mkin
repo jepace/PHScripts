@@ -1,0 +1,16 @@
+#!/bin/ksh
+
+DIR=$HOME/public_html/incoming
+
+cd $DIR
+
+rm -f $DIR/index.html
+
+for i in `ls`
+do
+   echo "<a href=\"$i\"> $i </a>" >> $DIR/index.html
+   echo "<br>" >> $DIR/index.html
+done
+
+chmod 444 $DIR/index.html
+
